@@ -1,5 +1,5 @@
 #![deny(missing_docs)]
-// #![warn(clippy::pedantic)]
+#![warn(clippy::pedantic)]
 //! A crate providing an undirected graph struct
 
 use std::{marker::PhantomData, ptr::NonNull};
@@ -22,7 +22,7 @@ pub struct SimpleGraph<T, U> {
     nodes: Vec<Option<NonNull<Node<T, U>>>>,
     edges: Vec<Option<NonNull<Edge<T, U>>>>,
     _node_type: PhantomData<T>, // Phantom data so it is known that the type of the nodes is T
-    _edge_type: PhantomData<T>, // Phantom data so it is know that the type of the edges is U
+    _edge_type: PhantomData<U>, // Phantom data so it is know that the type of the edges is U
 }
 
 impl<T, U> Default for SimpleGraph<T, U> {
@@ -37,14 +37,23 @@ pub struct IterNodes<'a, T, U> {
     _boo: PhantomData<&'a T>, // lifetime annotation to ensure the graph last as long as the iterator over nodes
 }
 
-/// an immutable (read-only) iterator over nodes returning the contents of the node and a Vec containing the contents of adjacent edges
+/// an immutable (read-only) iterator over nodes returning the contents of the node and a Vec containing the contents of aconnecting edges
 pub struct IterNodesEdge<'a, T, U>(IterNodes<'a, T, U>);
+
+/// an immutable (read-only) iterator over nodes returning the contents of the node and a Vec containing the contents of adjacent nodes
+pub struct IterNodesAdj<'a, T, U>(IterNodes<'a, T, U>);
 
 /// an mutable (read+write) iterator over nodes returning solely the contents of the node
 pub struct IterMutNodes<'a, T, U> {
     nodes: std::slice::IterMut<'a, Option<NonNull<Node<T, U>>>>, // the contents of the iterator
     _boo: PhantomData<&'a T>, // lifetime annotation to ensure the graph last as long as the iterator over nodes
 }
+
+/// an mutable (read+write) iterator over nodes returning the contents of the node and a Vec containing the contents of connecting edges
+pub struct IterMutNodesEdge<'a, T, U>(IterMutNodes<'a, T, U>);
+
+/// an mutable (read+write) iterator over nodes returning the contents of the node and a Vec containing the contents of adjacent nodes
+pub struct IterMutNodesAdj<'a, T, U>(IterMutNodes<'a, T, U>);
 
 /// an immutable (read-only) iterator over edges returning each edge and the contents of the nodes they connect
 pub struct IterEdges<'a, T, U> {
@@ -59,6 +68,7 @@ pub struct IterMutEdges<'a, T, U> {
 }
 
 impl<T, U> SimpleGraph<T, U> {
+    //---------------------Constructors------------------------------------------
     /// Constructor for an empty weighted undirected graph
     #[must_use] // must use as if not assigned to anything produces a value with no use
     pub fn new() -> Self {
@@ -89,10 +99,14 @@ impl<T, U> SimpleGraph<T, U> {
         }
     }
 
+    //-----------------------------------Add Elements----------------------------------------------
     /// Add an edge to a graph
     /// # Errors
-    /// `SameNode`: connecting a nod to itself is not allowed in a simple graph
+    /// `SameNode`: connecting a node to itself is not allowed in a simple graph
+    ///
     /// `NodeOutOfRange`: attempting to connect to a node not in the graph
+    ///
+    /// `MultipleConnection`: attempting to connect the same two nodes by more than 1 edge
     pub fn add_edge(
         &mut self,
         edge_value: U,
@@ -101,6 +115,9 @@ impl<T, U> SimpleGraph<T, U> {
     ) -> Result<(), EdgeError> {
         if node_1 == node_2 {
             return Err(EdgeError::SameNode);
+        }
+        if self.get_edge(node_1, node_2).is_some() {
+            return Err(EdgeError::MultipleConnection);
         }
         let n_1 = *self.nodes.get(node_1).ok_or(EdgeError::NodeOutOfRange)?;
         let n_2 = *self.nodes.get(node_2).ok_or(EdgeError::NodeOutOfRange)?;
@@ -139,7 +156,103 @@ impl<T, U> SimpleGraph<T, U> {
         self.nodes.append(nodes_to_add);
     }
 
+    //------------------------------------get elements---------------------------------------
+
+    /// get an edge between node 1 and node 2 if it exists
+    #[must_use]
+    pub fn get_edge(&self, node_1: usize, node_2: usize) -> Option<&U> {
+        let edge = self._get_edge(node_1, node_2);
+        if let Some(edge) = edge {
+            return Some(unsafe { &(edge.as_ref()).value });
+        }
+        None
+    }
+
+    /// get an edge between node 1 and node 2 if it exists
+    fn _get_edge(&self, node_1: usize, node_2: usize) -> Option<NonNull<Edge<T, U>>> {
+        if let (Some(Some(node_1)), Some(node_2)) = (self.nodes.get(node_1), self.nodes.get(node_2))
+        {
+            let node_ref = unsafe { node_1.as_ref() };
+            let edge: Option<NonNull<Edge<T, U>>> = node_ref
+                .connections
+                .iter()
+                .flatten()
+                .find(|edge| {
+                    (unsafe { &(edge.as_ref()).start } == node_2)
+                        | (unsafe { &(edge.as_ref()).end } == node_2)
+                })
+                .copied();
+            if let Some(edge) = edge {
+                return Some(edge);
+            }
+        }
+        None
+    }
+
+    //------------------------------------Drop elements---------------------------------
+
+    /// remove the edge between node 1 and 2 if it exists returning the value inside
+    pub fn drop_edge(&mut self, node_1: usize, node_2: usize) -> Option<U> {
+        let edge_to_drop = self._get_edge(node_1, node_2);
+        if let (Some(Some(mut node_1)), Some(Some(mut node_2))) =
+            (self.nodes.get(node_1), self.nodes.get(node_2))
+        {
+            // SAFETY: We know that the node is not null because it is Some
+            // mutate one at a time
+            let node_1 = unsafe { node_1.as_mut() };
+            node_1.connections.retain(|e| *e != edge_to_drop);
+            let node_2 = unsafe { node_2.as_mut() };
+            node_2.connections.retain(|e| *e != edge_to_drop);
+        }
+        self.edges.retain(|e| *e != edge_to_drop);
+        if let Some(edge) = edge_to_drop {
+            // this exists to take ownesrhip of the memory now
+            // on the heap and be dropped and so deallocate that memory
+            let box_scope = unsafe { Box::from_raw(edge.as_ptr()) };
+            Some(box_scope.value)
+        } else {
+            None
+        }
+    }
+
+    /// remove a specific edge
+    fn _drop_edge(&mut self, edge_to_drop: Option<NonNull<Edge<T, U>>>) {
+        if let Some(edge_ref) = edge_to_drop {
+            let edge = unsafe { edge_ref.as_ref() };
+            if let (Some(mut node_1), Some(mut node_2)) = (edge.start, edge.end) {
+                let node_1 = unsafe { node_1.as_mut() };
+                node_1.connections.retain(|e| *e != edge_to_drop);
+                let node_2 = unsafe { node_2.as_mut() };
+                node_2.connections.retain(|e| *e != edge_to_drop);
+            }
+            self.edges.retain(|e| *e != edge_to_drop);
+            // take ownership to drop value from scope now all pointers are dropped
+            let _box_scope = unsafe { Box::from_raw(edge_ref.as_ptr()) };
+        }
+    }
+
+    /// drop a node based on index returning the contents
+    /// will reindex ither nodes
+    /// time complexity propotional to number of connecting edges
+    pub fn drop_node(&mut self, node: usize) -> Option<T> {
+        if let Some(Some(mut node_ref)) = self.nodes.get(node) {
+            let node = unsafe { node_ref.as_mut() };
+            // delete all edges connecting the node
+            for edge in node.connections.drain(..) {
+                self._drop_edge(edge);
+            }
+            self.nodes.retain(|n| n != &Some(node_ref));
+            // take ownership and drop
+            let box_scope = unsafe { Box::from_raw(node_ref.as_ptr()) };
+            Some(box_scope.elem)
+        } else {
+            None
+        }
+    }
+
+    //-------------------------------------Get Iterators------------------------------------------------
     /// return an immutable iterator over nodes
+    #[must_use]
     pub fn iter_nodes(&self) -> IterNodes<T, U> {
         IterNodes {
             nodes: self.nodes.iter(),
@@ -150,8 +263,20 @@ impl<T, U> SimpleGraph<T, U> {
     /// return an immutable iterator over nodes
     /// returning node contents and a vec of the
     /// value of connected edges
+    #[must_use]
     pub fn iter_nodes_edges(&self) -> IterNodesEdge<T, U> {
         IterNodesEdge(IterNodes {
+            nodes: self.nodes.iter(),
+            _boo: PhantomData,
+        })
+    }
+
+    /// return an immutable iterator over nodes
+    /// returning node contents and a vec of the
+    /// value of adjacent nodes
+    #[must_use]
+    pub fn iter_nodes_adj(&self) -> IterNodesAdj<T, U> {
+        IterNodesAdj(IterNodes {
             nodes: self.nodes.iter(),
             _boo: PhantomData,
         })
@@ -165,7 +290,24 @@ impl<T, U> SimpleGraph<T, U> {
         }
     }
 
-    /// return an immutable iterator over nodes
+    /// return an mutable iterator over nodes and a vec of the adjacent edges
+    pub fn iter_mut_nodes_edges(&mut self) -> IterMutNodesEdge<T, U> {
+        IterMutNodesEdge(IterMutNodes {
+            nodes: self.nodes.iter_mut(),
+            _boo: PhantomData,
+        })
+    }
+
+    /// return an mutable iterator over nodes and a vec of the adjacent nodes
+    pub fn iter_mut_nodes_adj(&mut self) -> IterMutNodesAdj<T, U> {
+        IterMutNodesAdj(IterMutNodes {
+            nodes: self.nodes.iter_mut(),
+            _boo: PhantomData,
+        })
+    }
+
+    /// return an immutable iterator over edges
+    #[must_use]
     pub fn iter_edges(&self) -> IterEdges<T, U> {
         IterEdges {
             edges: self.edges.iter(),
@@ -173,7 +315,7 @@ impl<T, U> SimpleGraph<T, U> {
         }
     }
 
-    /// return an mutable iterator over nodes
+    /// return an mutable iterator over edges
     pub fn iter_mut_edges(&mut self) -> IterMutEdges<T, U> {
         IterMutEdges {
             edges: self.edges.iter_mut(),
@@ -181,16 +323,16 @@ impl<T, U> SimpleGraph<T, U> {
         }
     }
 
+    //----------------------Destructors----------------------------------------
+
     /// Drop all edges in the graph
     pub fn drop_all_edges(&mut self) {
         // if there are no edges, no nodes should report any
         // therefore drop the list of connections from each node
         if let Some(node) = self.nodes.iter_mut().by_ref().flatten().next() {
-            //if let Some(node) = node_option {
             // SAFETY: We know that the node is not null because it is Some
             let node = unsafe { node.as_mut() };
             node.connections.truncate(0);
-            //}
         }
 
         self.edges.drain(..).for_each(|edge_pointer| {
@@ -251,6 +393,40 @@ impl<'a, T, U> Iterator for IterNodesEdge<'a, T, U> {
     }
 }
 
+impl<'a, T, U> Iterator for IterNodesAdj<'a, T, U> {
+    type Item = (&'a T, Vec<&'a T>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(node) = self.0.nodes.by_ref().flatten().next() {
+            //if let Some(node) = node_option {
+            // SAFETY: We know that the node is not null because it is Some
+            let node_ref = unsafe { node.as_ref() };
+            let adj: Vec<&T> = node_ref
+                .connections
+                .iter()
+                .filter_map(|edge| {
+                    edge.map(|edge| {
+                        // if the start is the current node
+                        if unsafe { (edge.as_ref()).start == Some(*node) } {
+                            // return the end
+                            unsafe { (edge.as_ref()).end }
+                                .map(|adj_node| unsafe { &(adj_node.as_ref().elem) })
+                        } else {
+                            // else return the start
+                            unsafe { (edge.as_ref()).start }
+                                .map(|adj_node| unsafe { &(adj_node.as_ref().elem) })
+                        }
+                    })
+                })
+                .flatten()
+                .collect();
+            return Some((&node_ref.elem, adj));
+            //}
+        }
+        None
+    }
+}
+
 impl<'a, T, U> Iterator for IterMutNodes<'a, T, U> {
     type Item = &'a mut T;
 
@@ -260,6 +436,61 @@ impl<'a, T, U> Iterator for IterMutNodes<'a, T, U> {
             // SAFETY: We know that the node is not null because it is Some
             let node_ref = unsafe { node.as_mut() };
             return Some(&mut node_ref.elem);
+            //}
+        }
+        None
+    }
+}
+
+impl<'a, T, U> Iterator for IterMutNodesEdge<'a, T, U> {
+    type Item = (&'a mut T, Vec<&'a mut U>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(node) = self.0.nodes.by_ref().flatten().next() {
+            //if let Some(node) = node_option {
+            // SAFETY: We know that the node is not null because it is Some
+            // This needs to be checked
+            let node_ref = unsafe { node.as_mut() };
+            let edges: Vec<&mut U> = node_ref
+                .connections
+                .iter_mut()
+                .filter_map(|edge| edge.map(|mut edge| unsafe { &mut (edge.as_mut()).value }))
+                .collect();
+            return Some((&mut node_ref.elem, edges));
+            //}
+        }
+        None
+    }
+}
+
+impl<'a, T, U> Iterator for IterMutNodesAdj<'a, T, U> {
+    type Item = (&'a mut T, Vec<&'a mut T>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(node) = self.0.nodes.by_ref().flatten().next() {
+            //if let Some(node) = node_option {
+            // SAFETY: We know that the node is not null because it is Some
+            let node_ref = unsafe { node.as_mut() };
+            let adj: Vec<&mut T> = node_ref
+                .connections
+                .iter_mut()
+                .filter_map(|edge| {
+                    edge.map(|edge| {
+                        // if the start is the current node
+                        if unsafe { (edge.as_ref()).start == Some(*node) } {
+                            // return the end
+                            unsafe { (edge.as_ref()).end }
+                                .map(|mut adj_node| unsafe { &mut (adj_node.as_mut().elem) })
+                        } else {
+                            // else return the start
+                            unsafe { (edge.as_ref()).start }
+                                .map(|mut adj_node| unsafe { &mut (adj_node.as_mut().elem) })
+                        }
+                    })
+                })
+                .flatten()
+                .collect();
+            return Some((&mut node_ref.elem, adj));
             //}
         }
         None
@@ -300,17 +531,23 @@ impl<'a, T, U> Iterator for IterMutEdges<'a, T, U> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
 /// An error regarding edge creation
 pub enum EdgeError {
     /// The node is out of range of the present nodes
     NodeOutOfRange,
     /// the edge is connecting a node to itself
     SameNode,
+    /// The edge is not present
+    NoEdge,
+    /// A multiply connnected pair of nodes
+    MultipleConnection,
 }
 
 #[cfg(test)]
 mod test {
+    use crate::EdgeError;
+
     use super::SimpleGraph;
     #[test]
     fn basics() {
@@ -318,7 +555,8 @@ mod test {
         let mut graph: SimpleGraph<i32, &str> = SimpleGraph::from_nodes(points);
         // we can add an edge
         graph.add_edge("from 0 to 2", 0, 2).unwrap();
-        println!("here");
+        let e_v = graph.get_edge(2, 0).unwrap();
+        println!("Edge can be got back {e_v}");
         // check immutable iterators
         graph.iter_nodes().for_each(|n| println!("{n}"));
         graph
@@ -333,5 +571,268 @@ mod test {
             println!("{n} is connected to");
             edges.iter().for_each(|edge| println!("    {edge}"))
         })
+    }
+
+    #[test]
+    // Should not be possible to connect a node to itself
+    fn edge_to_same() {
+        let points = vec![1, 2, 3];
+        let mut graph: SimpleGraph<i32, &str> = SimpleGraph::from_nodes(points);
+        // we can add an edge
+        assert_eq!(
+            graph.add_edge("from 0 to itself", 0, 0),
+            Err(EdgeError::SameNode)
+        );
+    }
+
+    #[test]
+    // Should not be possible to connect two nodes by more than one edge
+    fn two_edges() {
+        let points = vec![1, 2, 3];
+        let mut graph: SimpleGraph<i32, &str> = SimpleGraph::from_nodes(points);
+        // we can add an edge
+        graph.add_edge("from 0 to 2", 0, 2).unwrap();
+        assert_eq!(
+            graph.add_edge("from 0 to 2", 2, 0),
+            Err(EdgeError::MultipleConnection)
+        );
+    }
+
+    #[test]
+    // check ability to get an edge between two nodes specified by index
+    fn get_edge() {
+        let points = vec![1, 2, 3];
+        let mut graph: SimpleGraph<i32, &str> = SimpleGraph::from_nodes(points);
+        graph.add_edge("from 0 to 2", 0, 2).unwrap();
+        assert_eq!(graph.get_edge(1, 0), None);
+    }
+
+    #[test]
+    // check ability to drop an edge between two nodes specified by index
+    fn drop_edge() {
+        let points = vec![1, 2, 3];
+        let mut graph: SimpleGraph<i32, &str> = SimpleGraph::from_nodes(points);
+        graph.add_edge("from 0 to 2", 0, 2).unwrap();
+        graph.add_edge("from 0 to 1", 0, 1).unwrap();
+        graph.add_edge("from 2 to 1", 2, 1).unwrap();
+        let dropped_edge = graph.drop_edge(0, 2);
+        assert_eq!(dropped_edge, Some("from 0 to 2"));
+        assert_eq!(graph.get_edge(0, 2), None);
+    }
+
+    #[test]
+    // check ability to drop an node specified by index
+    fn drop_node() {
+        let points = vec![1, 2, 3, 4, 5];
+        let mut k5: SimpleGraph<i32, f64> = SimpleGraph::from_nodes(points);
+        k5.add_edge(0.1, 0, 1).unwrap();
+        k5.add_edge(0.2, 0, 2).unwrap();
+        k5.add_edge(0.3, 0, 3).unwrap();
+        k5.add_edge(0.4, 0, 4).unwrap();
+
+        k5.add_edge(1.2, 1, 2).unwrap();
+        k5.add_edge(1.3, 1, 3).unwrap();
+        k5.add_edge(1.4, 1, 4).unwrap();
+
+        k5.add_edge(2.3, 2, 3).unwrap();
+        k5.add_edge(2.4, 2, 4).unwrap();
+
+        k5.add_edge(3.4, 3, 4).unwrap();
+
+        assert_eq!(k5.drop_node(2), Some(3));
+        assert_eq!(k5.iter_nodes().collect::<Vec<&i32>>(), &[&1, &2, &4, &5])
+    }
+
+    #[test]
+    fn iter_adjacent() {
+        let points = vec![0, 1, 2, 3, 4];
+        let mut graph: SimpleGraph<i32, ()> = SimpleGraph::from_nodes(points);
+        graph.add_edge((), 0, 2).unwrap();
+        graph.add_edge((), 0, 3).unwrap();
+        graph.add_edge((), 4, 2).unwrap();
+        graph.add_edge((), 3, 1).unwrap();
+        graph.iter_nodes_adj().for_each(|(node, adj)| {
+            println!("Node {node} is connected to");
+            adj.into_iter().for_each(|a| println!("        {a}"))
+        })
+    }
+
+    #[test]
+    fn iter_adjacent_mut() {
+        struct BFSNode {
+            city: String,
+            roads: Option<i32>,
+        }
+        let frankfurt = BFSNode {
+            city: "Frankfurt".to_string(),
+            roads: Some(0),
+        };
+        let mannheim = BFSNode {
+            city: "Mannheim".to_string(),
+            roads: None,
+        };
+        let wurzburg = BFSNode {
+            city: "Wurzburg".to_string(),
+            roads: None,
+        };
+        let stuttgart = BFSNode {
+            city: "Stuttgart".to_string(),
+            roads: None,
+        };
+        let kassel = BFSNode {
+            city: "Kassel".to_string(),
+            roads: None,
+        };
+        let karlsruhe = BFSNode {
+            city: "Karlsruhe".to_string(),
+            roads: None,
+        };
+        let erfurt = BFSNode {
+            city: "Erfurt".to_string(),
+            roads: None,
+        };
+        let nurnberg = BFSNode {
+            city: "Nurnberg".to_string(),
+            roads: None,
+        };
+        let augsburg = BFSNode {
+            city: "Augsburg".to_string(),
+            roads: None,
+        };
+        let munchen = BFSNode {
+            city: "Munchen".to_string(),
+            roads: None,
+        };
+        let cities = vec![
+            frankfurt, mannheim, wurzburg, stuttgart, karlsruhe, erfurt, nurnberg, kassel,
+            augsburg, munchen,
+        ];
+        let mut graph: SimpleGraph<BFSNode, i32> = SimpleGraph::from_nodes(cities);
+        graph.add_edge(85, 0, 1).unwrap(); // frankfurt to mannheim
+        graph.add_edge(217, 0, 2).unwrap(); // frankfurt to wurzburg
+        graph.add_edge(173, 0, 7).unwrap(); // frankfurt to kassel
+        graph.add_edge(80, 1, 4).unwrap(); // mannheim to karlsruhe
+        graph.add_edge(186, 2, 5).unwrap(); // wurzburg to erfurt
+        graph.add_edge(103, 2, 6).unwrap(); // wurzburg to nurnberg
+        graph.add_edge(183, 6, 3).unwrap(); // nurnberg to stuttgart
+        graph.add_edge(250, 4, 8).unwrap(); //karlsruhe to ausburg
+        graph.add_edge(84, 8, 9).unwrap(); // ausberg to munchen
+        graph.add_edge(167, 6, 9).unwrap(); // nurnberg to munchen
+        graph.add_edge(502, 7, 9).unwrap(); // kassel to munchen
+
+        // do a breadth first search to see the number of roads to each city from Frankfurt
+        let mut roads = 0;
+        loop {
+            let mut changed = 0;
+            graph
+                .iter_mut_nodes_adj()
+                .filter(|(node, _)| node.roads == Some(roads))
+                .for_each(|(_, mut adj_nodes)| {
+                    adj_nodes
+                        .iter_mut()
+                        .filter(|a| a.roads.is_none())
+                        .for_each(|a| {
+                            a.roads = Some(roads + 1);
+                            changed += 1;
+                        });
+                });
+            roads += 1;
+            if changed == 0 {
+                break;
+            }
+        }
+        // graph
+        //     .iter_nodes()
+        //     .for_each(|node| println!("{} takes {:?} roads", node.city, node.roads));
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Frankfurt")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(0)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Mannheim")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(1)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Wurzburg")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(1)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Kassel")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(1)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Karlsruhe")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(2)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Nurnberg")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(2)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Erfurt")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(2)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Munchen")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(2)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Augsburg")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(3)]
+        );
+
+        assert_eq!(
+            graph
+                .iter_nodes()
+                .filter(|node| node.city == "Stuttgart")
+                .map(|node| node.roads)
+                .collect::<Vec<Option<i32>>>(),
+            vec![Some(3)]
+        );
     }
 }
