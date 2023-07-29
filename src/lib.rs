@@ -4,7 +4,8 @@
     clippy::suspicious,
     clippy::perf,
     clippy::complexity,
-    clippy::style
+    clippy::style,
+    clippy::cargo
 )]
 
 //! A crate providing an undirected graph struct
@@ -477,6 +478,107 @@ impl<T, U> SimpleGraph<T, U> {
         dropped
     }
 
+    /// Drop edges based on the edge value and the value of the nodes it connects
+    ///
+    ///
+    /// ```
+    /// # use graph::SimpleGraph;
+    /// let nodes = [1, 2, 3];
+    /// let mut graph:SimpleGraph<i32,i32> = SimpleGraph::from_nodes(nodes);
+    /// graph.add_edge(3, 0, 1).unwrap();
+    /// graph.add_edge(3, 0, 2).unwrap();
+    /// graph.add_edge(5, 1, 2).unwrap();
+    /// let dropped = graph.drop_edges_by_adj(|(n_1, n_2, val)|  val < &(n_1 +n_2));
+    /// assert_eq!( dropped, [3]);
+    /// assert_eq!( graph.get_edge(0, 2), None);// this edge has been filtered out
+    /// assert_eq!( graph.get_edge(0, 1), Some(&3i32));
+    /// assert_eq!( graph.get_edge(1, 2), Some(&5i32));
+    /// ```
+    pub fn drop_edges_by_adj<Pred: Fn((&T, &T, &U)) -> bool>(&mut self, predicate: Pred) -> Vec<U>
+    where
+        U: Copy,
+    {
+        let mut dropped: Vec<U> = Vec::new();
+        let todrop: Vec<Option<NonNull<Edge<T, U>>>> = self
+            .edges
+            .iter()
+            .filter(|edge_ref| {
+                if let Some(edge) = edge_ref {
+                    if let (Some(node_1), Some(node_2)) =
+                        unsafe { ((edge.as_ref().start), (edge.as_ref().end)) }
+                    {
+                        predicate((
+                            unsafe { &(node_1.as_ref()).elem },
+                            unsafe { &(node_2.as_ref()).elem },
+                            unsafe { &(edge.as_ref()).value },
+                        ))
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            })
+            .copied()
+            .collect();
+
+        for edge_to_drop in todrop {
+            let dropped_edge = self._drop_edge(edge_to_drop);
+            if let Some(val) = dropped_edge {
+                dropped.push(val);
+            }
+        }
+        dropped
+    }
+
+    /// Drop edges based on the edge value and the value of the nodes it connects
+    /// Returns nothing
+    ///
+    /// ```
+    /// # use graph::SimpleGraph;
+    /// let nodes = [1, 2, 3];
+    /// let mut graph:SimpleGraph<i32,i32> = SimpleGraph::from_nodes(nodes);
+    /// graph.add_edge(3, 0, 1).unwrap();
+    /// graph.add_edge(3, 0, 2).unwrap();
+    /// graph.add_edge(5, 1, 2).unwrap();
+    /// graph.drop_edges_by_adj_silent(|(n_1, n_2, val)|  val < &(n_1 +n_2));
+    ///
+    /// assert_eq!( graph.get_edge(0, 2), None);// this edge has been filtered out
+    /// assert_eq!( graph.get_edge(0, 1), Some(&3i32));
+    /// assert_eq!( graph.get_edge(1, 2), Some(&5i32));
+    /// ```
+    pub fn drop_edges_by_adj_silent<Pred: Fn((&T, &T, &U)) -> bool>(&mut self, predicate: Pred)
+    where
+        U: Copy,
+    {
+        self.edges.iter_mut().for_each(|edge_ref| {
+            if let Some(edge) = edge_ref {
+                if let (Some(mut node_1), Some(mut node_2)) =
+                    unsafe { ((edge.as_ref().start), (edge.as_ref().end)) }
+                {
+                    if predicate((
+                        unsafe { &(node_1.as_ref()).elem },
+                        unsafe { &(node_2.as_ref()).elem },
+                        unsafe { &(edge.as_ref()).value },
+                    )) {
+                        unsafe {
+                            (node_1.as_mut())
+                                .connections
+                                .retain(|edge| edge != edge_ref);
+                        };
+                        unsafe {
+                            (node_2.as_mut())
+                                .connections
+                                .retain(|edge| edge != edge_ref);
+                        };
+                        edge_ref.map(|node| unsafe { Box::from_raw(node.as_ptr()) });
+                        *edge_ref = None;
+                    }
+                    // !truth
+                }
+            }
+        });
+    }
     //-------------------------------------Get Iterators------------------------------------------------
     /// return an immutable iterator over nodes
     #[must_use]
@@ -559,11 +661,11 @@ impl<T, U> SimpleGraph<T, U> {
         if let Some(node) = self.nodes.iter_mut().by_ref().flatten().next() {
             // SAFETY: We know that the node is not null because it is Some
             let node = unsafe { node.as_mut() };
-            node.connections.truncate(0);
+            node.connections.clear();
         }
 
         self.edges.drain(..).for_each(|edge_pointer| {
-            edge_pointer.map(|node| unsafe { Box::from_raw(node.as_ptr()) });
+            edge_pointer.map(|edge| unsafe { Box::from_raw(edge.as_ptr()) });
         });
     }
 

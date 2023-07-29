@@ -2,7 +2,11 @@
 name = "graph"
 version = "0.1.0"
 edition = "2021"
-
+description = "A not too unsafe hopefully performant library for simple graphs"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+categories = ["collections", "scientific"]
+keywords = ["scientific"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
