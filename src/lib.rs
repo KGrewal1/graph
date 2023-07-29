@@ -894,10 +894,12 @@ mod test {
         // check assignment
         graph.iter_nodes().for_each(|n| println!("{n}"));
         // panic!()
-        graph.iter_nodes_edges().for_each(|(n, edges)| {
+        for (n, edges) in graph.iter_nodes_edges() {
             println!("{n} is connected to");
-            edges.iter().for_each(|edge| println!("    {edge}"))
-        })
+            for edge in edges {
+                println!("    {edge}");
+            }
+        }
     }
 
     #[test]
@@ -967,10 +969,7 @@ mod test {
         k5.add_edge(3.4, 3, 4).unwrap();
 
         assert_eq!(k5.drop_node(2), Some(3));
-        assert_eq!(
-            k5.iter_nodes().map(|v| *v).collect::<Vec<i32>>(),
-            [1, 2, 4, 5]
-        )
+        assert_eq!(k5.iter_nodes().copied().collect::<Vec<i32>>(), [1, 2, 4, 5]);
     }
 
     #[test]
@@ -993,7 +992,7 @@ mod test {
         k5.add_edge(3.4, 3, 4).unwrap();
 
         assert_eq!(k5.drop_nodes_by(|val| val > &3), [4, 5]);
-        assert_eq!(k5.iter_nodes().map(|v| *v).collect::<Vec<i32>>(), [1, 2, 3])
+        assert_eq!(k5.iter_nodes().copied().collect::<Vec<i32>>(), [1, 2, 3]);
     }
 
     #[test]
@@ -1004,13 +1003,16 @@ mod test {
         graph.add_edge((), 0, 3).unwrap();
         graph.add_edge((), 4, 2).unwrap();
         graph.add_edge((), 3, 1).unwrap();
-        graph.iter_nodes_adj().for_each(|(node, adj)| {
+        for (node, adj) in graph.iter_nodes_adj() {
             println!("Node {node} is connected to");
-            adj.into_iter().for_each(|a| println!("        {a}"))
-        })
+            for a in adj {
+                println!("        {a}");
+            }
+        }
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn iter_adjacent_mut() {
         struct BFSNode {
             city: String,
