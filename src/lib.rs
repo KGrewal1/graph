@@ -11,7 +11,7 @@
 
 use std::{marker::PhantomData, ptr::NonNull};
 
-/// A nodeof an undirected graph
+/// A node of an undirected graph
 struct Node<T, U> {
     elem: T,
     connections: Vec<Option<NonNull<Edge<T, U>>>>,
@@ -211,9 +211,9 @@ impl<T, U> SimpleGraph<T, U> {
     /// let nodes = [1, 2, 3];
     /// let mut graph:SimpleGraph<i32,f64> = SimpleGraph::from_nodes(nodes);
     /// graph.add_edge(0.2, 0, 2);
-    /// assert_eq!( graph.get_edge(0, 2), Some(&0.2));
+    /// assert_eq!( graph.get_edge(0, 2), Some(&0.2f64));
     /// assert_eq!( graph.get_edge(0, 1), None); // none as there is no edge
-    /// assert_eq!( graph.get_edge(0, 3), None) // none as node 3 does not exist
+    /// assert_eq!( graph.get_edge(0, 3), None); // none as node 3 does not exist
     /// ```
     #[must_use]
     pub fn get_edge(&self, node_1: usize, node_2: usize) -> Option<&U> {
@@ -224,15 +224,49 @@ impl<T, U> SimpleGraph<T, U> {
         None
     }
 
-    /// get an node by index
+    /// get a mutable reference to an edge between node 1 and node 2 if it exists
     /// ```
     /// # use graph::SimpleGraph;
     /// let nodes = [1, 2, 3];
     /// let mut graph:SimpleGraph<i32,f64> = SimpleGraph::from_nodes(nodes);
-    /// let mut x = 1; // this is just to have same type of &mut i32
-    /// assert_eq!( graph.get_node(0), Some(&mut x));
+    /// graph.add_edge(0.2, 0, 2);
+    /// assert_eq!( graph.get_edge_mut(0, 2), Some(&mut 0.2f64));
+    /// assert_eq!( graph.get_edge_mut(0, 1), None); // none as there is no edge
+    /// assert_eq!( graph.get_edge_mut(0, 3), None) // none as node 3 does not exist
     /// ```
-    pub fn get_node(&mut self, node: usize) -> Option<&mut T> {
+    #[must_use]
+    pub fn get_edge_mut(&mut self, node_1: usize, node_2: usize) -> Option<&mut U> {
+        let edge = self._get_edge(node_1, node_2);
+        if let Some(mut edge) = edge {
+            return Some(unsafe { &mut (edge.as_mut()).value });
+        }
+        None
+    }
+
+    /// get a node by index
+    /// ```
+    /// # use graph::SimpleGraph;
+    /// let nodes = [1, 2, 3];
+    /// let mut graph:SimpleGraph<i32,f64> = SimpleGraph::from_nodes(nodes);
+    /// assert_eq!( graph.get_node(0), Some(&1i32));
+    /// ```
+    pub fn get_node(&mut self, node: usize) -> Option<&T> {
+        if let Some(Some(node)) = self.nodes.get(node) {
+            let node = unsafe { &(node.as_ref()).elem };
+            Some(node)
+        } else {
+            None
+        }
+    }
+
+    /// get a mutable node by index
+    /// ```
+    /// # use graph::SimpleGraph;
+    /// let nodes = [1, 2, 3];
+    /// let mut graph:SimpleGraph<i32,f64> = SimpleGraph::from_nodes(nodes);
+    /// assert_eq!( graph.get_node_mut(0), Some(&mut 1i32));
+    /// ```
+    pub fn get_node_mut(&mut self, node: usize) -> Option<&mut T> {
         if let Some(Some(mut node)) = self.nodes.get(node) {
             let node = unsafe { &mut (node.as_mut()).elem };
             Some(node)
@@ -265,6 +299,14 @@ impl<T, U> SimpleGraph<T, U> {
     //------------------------------------Drop elements---------------------------------
 
     /// remove the edge between node 1 and 2 if it exists returning the value inside
+    /// ```
+    /// # use graph::SimpleGraph;
+    /// let nodes = [1, 2, 3];
+    /// let mut graph:SimpleGraph<i32,f64> = SimpleGraph::from_nodes(nodes);
+    /// graph.add_edge(0.2, 0, 2);
+    /// assert_eq!( graph.drop_edge(0, 2), Some(0.2f64));
+    /// assert_eq!( graph.get_edge_mut(0, 2), None); // The edge no longer exists
+    /// ```
     pub fn drop_edge(&mut self, node_1: usize, node_2: usize) -> Option<U> {
         let edge_to_drop = self._get_edge(node_1, node_2);
         if let (Some(Some(mut node_1)), Some(Some(mut node_2))) =
@@ -289,7 +331,7 @@ impl<T, U> SimpleGraph<T, U> {
     }
 
     /// remove a specific edge
-    fn _drop_edge(&mut self, edge_to_drop: Option<NonNull<Edge<T, U>>>) {
+    fn _drop_edge(&mut self, edge_to_drop: Option<NonNull<Edge<T, U>>>) -> Option<U> {
         if let Some(edge_ref) = edge_to_drop {
             let edge = unsafe { edge_ref.as_ref() };
             if let (Some(mut node_1), Some(mut node_2)) = (edge.start, edge.end) {
@@ -300,13 +342,27 @@ impl<T, U> SimpleGraph<T, U> {
             }
             self.edges.retain(|e| *e != edge_to_drop);
             // take ownership to drop value from scope now all pointers are dropped
-            let _box_scope = unsafe { Box::from_raw(edge_ref.as_ptr()) };
+            let box_scope = unsafe { Box::from_raw(edge_ref.as_ptr()) };
+            Some(box_scope.value)
+        } else {
+            None
         }
     }
 
     /// drop a node based on index returning the contents
-    /// will reindex ither nodes
+    ///
+    /// will reindex other nodes
+    ///
     /// time complexity propotional to number of connecting edges
+    ///
+    /// ```
+    /// # use graph::SimpleGraph;
+    /// let nodes = [1, 2, 3];
+    /// let mut graph:SimpleGraph<i32,f64> = SimpleGraph::from_nodes(nodes);
+    /// assert_eq!( graph.drop_node(0), Some(1i32));
+    /// assert_eq!( graph.get_node(0), Some(&2i32)); // other nodes reindexed
+    /// assert_eq!( graph.get_node(2), None); // one fewer node
+    /// ```
     pub fn drop_node(&mut self, node: usize) -> Option<T> {
         if let Some(node_ref) = self.nodes.get(node) {
             self._drop_node(*node_ref)
@@ -334,9 +390,22 @@ impl<T, U> SimpleGraph<T, U> {
 
     /// filter nodes based on a predicate on the value of the node
     /// drop nodes fulfilling a property
+    ///
     /// returns a vec of the contents of dropped nodes
+    ///
     /// will reindex other nodes
-    pub fn drop_nodes_by<Pred: Fn(&T) -> bool>(&mut self, filter: Pred) -> Vec<T>
+    ///
+    /// ```
+    /// # use graph::SimpleGraph;
+    /// let nodes = [1, 2, 3, 4, 5];
+    /// let mut graph:SimpleGraph<i32,f64> = SimpleGraph::from_nodes(nodes);
+    /// let dropped = graph.drop_nodes_by(|val| (val > &2) & (val < &5));
+    /// assert_eq!( dropped, [3, 4]);
+    /// assert_eq!( graph.get_node(0), Some(&1i32));
+    /// assert_eq!( graph.get_node(1), Some(&2i32));
+    /// assert_eq!( graph.get_node(2), Some(&5i32)); // other nodes reindexed
+    /// ```
+    pub fn drop_nodes_by<Pred: Fn(&T) -> bool>(&mut self, predicate: Pred) -> Vec<T>
     where
         T: Copy,
     {
@@ -346,17 +415,62 @@ impl<T, U> SimpleGraph<T, U> {
             .iter()
             .filter(|node_ref| {
                 if let Some(node) = node_ref {
-                    unsafe { filter(&(node.as_ref()).elem) }
+                    unsafe { predicate(&(node.as_ref()).elem) }
                 } else {
                     false
                 }
             })
-            .cloned()
+            .copied()
             .collect();
 
         for node_to_drop in todrop {
             let dropped_node = self._drop_node(node_to_drop);
             if let Some(val) = dropped_node {
+                dropped.push(val);
+            }
+        }
+        dropped
+    }
+
+    /// filter nodes based on a predicate on the value of the edge
+    /// drop edges fulfilling a property
+    ///
+    /// returns a vec of the contents of dropped edges
+    ///
+    /// ```
+    /// # use graph::SimpleGraph;
+    /// let nodes = [1, 2, 3, 4, 5];
+    /// let mut graph:SimpleGraph<i32,f64> = SimpleGraph::from_nodes(nodes);
+    /// graph.add_edge(3.4, 0, 2).unwrap();
+    /// graph.add_edge(4., 0, 3).unwrap();
+    /// graph.add_edge(4.7, 0, 1).unwrap();
+    /// let dropped = graph.drop_edges_by(|val| (val > &3.5) & (val < &4.5));
+    /// assert_eq!( dropped, [4.]);
+    /// assert_eq!( graph.get_edge(0, 2), Some(&3.4f64));
+    /// assert_eq!( graph.get_edge(0, 3), None); // this edge has been filtered out
+    /// assert_eq!( graph.get_edge(0, 1), Some(&4.7f64));
+    /// ```
+    pub fn drop_edges_by<Pred: Fn(&U) -> bool>(&mut self, predicate: Pred) -> Vec<U>
+    where
+        U: Copy,
+    {
+        let mut dropped: Vec<U> = Vec::new();
+        let todrop: Vec<Option<NonNull<Edge<T, U>>>> = self
+            .edges
+            .iter()
+            .filter(|edge_ref| {
+                if let Some(edge) = edge_ref {
+                    unsafe { predicate(&(edge.as_ref()).value) }
+                } else {
+                    false
+                }
+            })
+            .copied()
+            .collect();
+
+        for edge_to_drop in todrop {
+            let dropped_edge = self._drop_edge(edge_to_drop);
+            if let Some(val) = dropped_edge {
                 dropped.push(val);
             }
         }
@@ -611,7 +725,7 @@ impl<'a, T, U> Iterator for IterMutNodesAdj<'a, T, U> {
 }
 
 impl<'a, T, U> Iterator for IterEdges<'a, T, U> {
-    type Item = (&'a U, &'a T, &'a T);
+    type Item = (&'a T, &'a T, &'a U);
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(edge_ref) = self.edges.by_ref().flatten().next() {
@@ -620,7 +734,7 @@ impl<'a, T, U> Iterator for IterEdges<'a, T, U> {
                 // SAFETY: We know that the node is not null because it is Some
                 let node_1_ref = unsafe { node_1.as_ref() };
                 let node_2_ref = unsafe { node_2.as_ref() };
-                return Some((&edge.value, &node_1_ref.elem, &node_2_ref.elem));
+                return Some((&node_1_ref.elem, &node_2_ref.elem, &edge.value));
             }
         }
         None
@@ -649,10 +763,8 @@ impl<'a, T, U> Iterator for IterMutEdges<'a, T, U> {
 pub enum EdgeError {
     /// The node is out of range of the present nodes
     NodeOutOfRange,
-    /// the edge is connecting a node to itself
+    /// The edge is connecting a node to itself
     SameNode,
-    /// The edge is not present
-    NoEdge,
     /// A multiply connnected pair of nodes
     MultipleConnection,
 }
